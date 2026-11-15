@@ -14,12 +14,11 @@ const HOTSPOTS = [ // approximate coordinates: verify with research teammate
   { name: 'Sagar', lon: 88.06, lat: 21.74 },
   { name: 'Mousuni', lon: 88.20, lat: 21.66 },
 ]
-const TABS = [['map', 'Map'], ['land', 'Subsidence'], ['coast', 'Shoreline'], ['live', 'Live'], ['risk', 'Risk'], ['team', 'Team'], ['about', 'About']]
+const TABS = [['map', 'Map'], ['land', 'Subsidence'], ['coast', 'Shoreline'], ['live', 'Live'], ['risk', 'Risk'], ['about', 'About']]
 const TITLES = {
   map: `Where the delta is moving`, land: `The ground is giving way`, coast: `A shoreline in retreat`,
-  live: `The delta right now`, risk: `When land sinks as seas rise`, team: `The people behind it`, about: `Method & limits`,
+  live: `The delta right now`, risk: `When land sinks as seas rise`, about: `Method & limits`,
 }
-
 // ---- live feeds ----
 const LIVE_PT = { lat: 21.3, lon: 88.5 } // open water off Sagar Island: marine models need a sea point
 const AOI_WKT = 'POLYGON((88.0 21.5, 90.0 21.5, 90.0 22.8, 88.0 22.8, 88.0 21.5))'
