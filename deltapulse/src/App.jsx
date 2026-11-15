@@ -4,9 +4,10 @@ import 'maplibre-gl/dist/maplibre-gl.css'
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts'
 import './App.css'
 
-const DATA_IS_PLACEHOLDER = true // set to false once the real SAR results are in
 const CARD_NEAR_DOT = true // false = story text sits in a fixed left column instead of beside the dot
-const YEARS = Array.from({ length: 11 }, (_, i) => 2015 + i)
+const DEFAULT_YEARS = Array.from({ length: 11 }, (_, i) => 2015 + i) // used by the mock data; real years come from public/data/shorelines/years.json
+const HAS_COHERENCE = false // set true only if your subsidence file has a REAL coherence value per point
+const HAS_TIMESERIES = false // set true only when you have REAL time series per point (the inspector chart is a mock otherwise)
 const C = { bg: '#0a1210', land: '#0c1513', water: '#0b1d24', teal: '#4fc2a6', blue: '#6fa8d6', parch: '#d9cfb4', muted: '#8e9a93' }
 const SAT = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
 const HOTSPOTS = [ // approximate coordinates: verify with research teammate
@@ -14,11 +15,12 @@ const HOTSPOTS = [ // approximate coordinates: verify with research teammate
   { name: 'Sagar', lon: 88.06, lat: 21.74 },
   { name: 'Mousuni', lon: 88.20, lat: 21.66 },
 ]
-const TABS = [['map', 'Map'], ['land', 'Subsidence'], ['coast', 'Shoreline'], ['live', 'Live'], ['risk', 'Risk'], ['about', 'About']]
+const TABS = [['map', 'Map'], ['land', 'Subsidence'], ['coast', 'Shoreline'], ['live', 'Live'], ['risk', 'Risk'], ['team', 'Team'], ['about', 'About']]
 const TITLES = {
   map: `Where the delta is moving`, land: `The ground is giving way`, coast: `A shoreline in retreat`,
-  live: `The delta right now`, risk: `When land sinks as seas rise`, about: `Method & limits`,
+  live: `The delta right now`, risk: `When land sinks as seas rise`, team: `The people behind it`, about: `Method & limits`,
 }
+
 // ---- live feeds ----
 const LIVE_PT = { lat: 21.3, lon: 88.5 } // open water off Sagar Island: marine models need a sea point
 const AOI_WKT = 'POLYGON((88.0 21.5, 90.0 21.5, 90.0 22.8, 88.0 22.8, 88.0 21.5))'
@@ -26,6 +28,7 @@ const GIBS_LAYER = 'VIIRS_NOAA20_CorrectedReflectance_TrueColor'
 const gibsUrl = (d) => `https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/${GIBS_LAYER}/default/${d}/GoogleMapsCompatible_Level9/{z}/{y}/{x}.jpg`
 const fmt1 = (v, d = 1) => (v == null || Number.isNaN(+v) ? '–' : (+v).toFixed(d))
 const signed = (v) => (v == null ? '–' : `${v >= 0 ? '+' : ''}${(+v).toFixed(2)}`)
+
 // FILL IN the real names. Add one entry per person (a role can appear more than once)
 const TEAM = [
   { name: `Name here`, role: `Satellite data acquisition & research` },
@@ -191,7 +194,10 @@ export default function App() {
   const [showBase, setShowBase] = useState(true)
   const [sel, setSel] = useState(null)
   const [pts, setPts] = useState([])
-  const [shift, setShift] = useState([])
+  const [shift, setShift] = useState({ unit: 'km', rows: [] })
+  const [years, setYears] = useState(DEFAULT_YEARS)
+  const [yearsLoaded, setYearsLoaded] = useState(false)
+  const [src, setSrc] = useState({ subs: null, shore: null }) // filled from the data files themselves
   const [slr, setSlr] = useState(4) // mm/yr ASSUMPTION: confirm with research teammate
   const [horizon, setHorizon] = useState(2050)
   const [live, setLive] = useState({ marine: null, wx: null, sea: [], err: false })
@@ -228,16 +234,16 @@ export default function App() {
         'circle-opacity': 0.85,
         'circle-color': ['interpolate', ['linear'], ['get', 'rate_mm_yr'],
           -10, '#efe6cf', -7.5, '#d9cfb4', -5, '#4fc2a6', -2, '#2c7f86', 0, '#1d4a6e'] } })
-      m.addSource('base', { type: 'geojson', data: '/data/shorelines/2015.geojson' })
+      m.addSource('base', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
       m.addLayer({ id: 'base', type: 'line', source: 'base', paint: { 'line-color': C.parch, 'line-width': 1.5, 'line-dasharray': [2, 2] } })
-      m.addSource('shore', { type: 'geojson', data: '/data/shorelines/2025.geojson' })
+      m.addSource('shore', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
       m.addLayer({ id: 'shore', type: 'line', source: 'shore', paint: { 'line-color': C.teal, 'line-width': 3 } })
       m.addSource('sel', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
       m.addLayer({ id: 'sel', type: 'circle', source: 'sel', paint: {
         'circle-radius': 14, 'circle-color': 'rgba(0,0,0,0)', 'circle-stroke-color': C.parch, 'circle-stroke-width': 2 } })
       m.addSource('nisar', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
       m.addLayer({ id: 'nisar-line', type: 'line', source: 'nisar', layout: { visibility: 'none' },
-  paint: { 'line-color': C.blue, 'line-width': 1.5, 'line-dasharray': [3, 2], 'line-opacity': 0.8 } })
+        paint: { 'line-color': C.blue, 'line-width': 1.5, 'line-dasharray': [3, 2], 'line-opacity': 0.8 } })
       m.on('click', 'subs', (e) => {
         const f = e.features[0]
         const [lon, lat] = f.geometry.coordinates
@@ -249,19 +255,33 @@ export default function App() {
     })
 
     fetch('/data/subsidence.geojson').then((r) => r.json())
-      .then((g) => setPts(g.features.map((f) => ({ rate: +f.properties.rate_mm_yr, coh: +f.properties.coherence })))).catch(() => {})
-
-    // APPROXIMATION: mean shoreline position shift in km. Replace with the team's shoreline change rate when available
-    Promise.all(YEARS.map((y) => fetch(`/data/shorelines/${y}.geojson`).then((r) => r.json())))
-      .then((arr) => {
-        const meanLat = (g) => {
-          const c = g.features.flatMap((f) => (f.geometry.type === 'LineString' ? f.geometry.coordinates
-            : f.geometry.type === 'MultiLineString' ? f.geometry.coordinates.flat() : []))
-          return c.length ? c.reduce((s, p) => s + p[1], 0) / c.length : 0
-        }
-        const base = meanLat(arr[0])
-        setShift(arr.map((g, i) => ({ year: YEARS[i], km: +((meanLat(g) - base) * 111).toFixed(2) })))
+      .then((g) => {
+        setPts(g.features.map((f) => ({ rate: +f.properties.rate_mm_yr, coh: +f.properties.coherence })))
+        if (g.source) setSrc((s) => ({ ...s, subs: g.source })) // only real data files carry a "source" note
       }).catch(() => {})
+
+    // shoreline years: real data lists them in years.json (with land area per year); the mock data falls back to 2015-2025
+    fetch('/data/shorelines/years.json').then((r) => (r.ok ? r.json() : Promise.reject(r.status))).catch(() => ({ years: DEFAULT_YEARS }))
+      .then(async (j) => {
+        const ys = (Array.isArray(j.years) && j.years.length > 1 ? j.years : DEFAULT_YEARS).map(Number)
+        setYears(ys)
+        setYear(ys[ys.length - 1])
+        if (j.source) setSrc((s) => ({ ...s, shore: j.source }))
+        if (j.land_km2) {
+          const base = j.land_km2[ys[0]]
+          setShift({ unit: 'km²', rows: ys.filter((y) => j.land_km2[y] != null).map((y) => ({ year: y, v: +(j.land_km2[y] - base).toFixed(1) })) })
+        } else {
+          // MOCK fallback: mean latitude shift of the shoreline lines, in km
+          const arr = await Promise.all(ys.map((y) => fetch(`/data/shorelines/${y}.geojson`).then((r) => r.json())))
+          const meanLat = (g) => {
+            const c = g.features.flatMap((f) => (f.geometry.type === 'LineString' ? f.geometry.coordinates
+              : f.geometry.type === 'MultiLineString' ? f.geometry.coordinates.flat() : []))
+            return c.length ? c.reduce((s, p) => s + p[1], 0) / c.length : 0
+          }
+          const base = meanLat(arr[0])
+          setShift({ unit: 'km', rows: arr.map((g, i) => ({ year: ys[i], v: +((meanLat(g) - base) * 111).toFixed(2) })) })
+        }
+      }).catch(() => {}).finally(() => setYearsLoaded(true))
 
     return () => m.remove()
   }, [])
@@ -271,7 +291,8 @@ export default function App() {
   useEffect(() => { vis('subs', showSubs && !intro) }, [showSubs, intro, ready])
   useEffect(() => { vis('base', showBase && !intro) }, [showBase, intro, ready])
   useEffect(() => { vis('shore', !intro) }, [intro, ready])
-  useEffect(() => { if (ready) map.current.getSource('shore').setData(`/data/shorelines/${year}.geojson`) }, [year, ready])
+  useEffect(() => { if (ready && yearsLoaded && years.includes(year)) map.current.getSource('shore').setData(`/data/shorelines/${year}.geojson`) }, [year, years, yearsLoaded, ready])
+  useEffect(() => { if (ready && yearsLoaded) map.current.getSource('base').setData(`/data/shorelines/${years[0]}.geojson`) }, [years, yearsLoaded, ready])
   useEffect(() => { if (ready) map.current.setFilter('subs', ['>=', ['get', 'coherence'], minCoh]) }, [minCoh, ready])
   useEffect(() => {
     if (!ready) return
@@ -280,9 +301,9 @@ export default function App() {
   }, [sel, ready])
   useEffect(() => {
     if (!playing) return
-    const id = setInterval(() => setYear((y) => (y >= 2025 ? 2015 : y + 1)), 800)
+    const id = setInterval(() => setYear((y) => years[(years.indexOf(y) + 1) % years.length]), 800)
     return () => clearInterval(id)
-  }, [playing])
+  }, [playing, years])
 
   useEffect(() => {
   if (!intro) return
@@ -317,79 +338,82 @@ const beginStory = () => {
   const pickTab = (t) => { setTab(t); setOpen(true) }
   const replay = () => { setSel(null); setStoryStep(0); setLanding(true); setIntro(true) }
   /* ---------- derived numbers ---------- */
-  const valid = useMemo(() => pts.filter((p) => p.coh >= minCoh), [pts, minCoh])
+  const valid = useMemo(() => (HAS_COHERENCE ? pts.filter((p) => p.coh >= minCoh) : pts), [pts, minCoh])
   const avg = valid.length ? valid.reduce((s, p) => s - p.rate, 0) / valid.length : 0
   const mx = valid.length ? Math.max(...valid.map((p) => -p.rate)) : 0
   const reliable = pts.length ? (valid.length / pts.length) * 100 : 0
   const hist = useMemo(() => {
-    const b = Array.from({ length: 10 }, (_, i) => ({ bin: i, n: 0 }))
-    valid.forEach((p) => { b[Math.min(9, Math.max(0, Math.floor(-p.rate)))].n++ })
+    const b = Array.from({ length: 13 }, (_, i) => ({ bin: i - 3, n: 0 })) // -3 (rising) .. 9 (sinking fast)
+    valid.forEach((p) => { b[Math.min(12, Math.max(0, Math.floor(-p.rate) + 3))].n++ })
     return b
   }, [valid])
   const avgRel = avg + slr
   const projCm = (avgRel * (horizon - 2025)) / 10
   const severe = valid.length ? (valid.filter((p) => -p.rate + slr >= 9).length / valid.length) * 100 : 0
-  const lastShift = shift.length ? shift[shift.length - 1].km : 0
+  const lastShift = shift.rows.length ? shift.rows[shift.rows.length - 1].v : 0
+  const spanYears = Math.max(1, years[years.length - 1] - years[0])
+  const sgn = (v, d = 1) => `${v > 0 ? '+' : ''}${v.toFixed(d)}`
   const rel = sel ? -sel.rate + slr : 0
   const risk = riskOf(rel)
-/* ---------- live feeds ---------- */
-useEffect(() => {
-  let stop = false
-  const load = async () => {
-    try {
-      const tz = 'Asia%2FKolkata'
-      const [m, w] = await Promise.all([
-        fetch(`https://marine-api.open-meteo.com/v1/marine?latitude=${LIVE_PT.lat}&longitude=${LIVE_PT.lon}&current=wave_height,sea_surface_temperature,sea_level_height_msl&hourly=sea_level_height_msl&forecast_days=2&timezone=${tz}`).then((r) => r.json()),
-        fetch(`https://api.open-meteo.com/v1/forecast?latitude=${LIVE_PT.lat}&longitude=${LIVE_PT.lon}&current=wind_speed_10m,precipitation&timezone=${tz}`).then((r) => r.json()),
-      ])
-      if (stop) return
-      const h = m.hourly || { time: [], sea_level_height_msl: [] }
-      const sea = h.time
-        .map((t, i) => ({ label: `${t.slice(8, 10)}/${t.slice(5, 7)} ${t.slice(11, 13)}h`, v: h.sea_level_height_msl[i] }))
-        .filter((d) => d.v != null)
-      setLive({ marine: m.current || null, wx: w.current || null, sea, err: !m.current })
-    } catch (e) { if (!stop) setLive((s) => ({ ...s, err: true })) }
-  }
-  load()
-  const id = setInterval(load, 10 * 60 * 1000)
-  return () => { stop = true; clearInterval(id) }
-}, [])
+  /* ---------- live feeds ---------- */
+  useEffect(() => {
+    let stop = false
+    const load = async () => {
+      try {
+        const tz = 'Asia%2FKolkata'
+        const [m, w] = await Promise.all([
+          fetch(`https://marine-api.open-meteo.com/v1/marine?latitude=${LIVE_PT.lat}&longitude=${LIVE_PT.lon}&current=wave_height,sea_surface_temperature,sea_level_height_msl&hourly=sea_level_height_msl&forecast_days=2&timezone=${tz}`).then((r) => r.json()),
+          fetch(`https://api.open-meteo.com/v1/forecast?latitude=${LIVE_PT.lat}&longitude=${LIVE_PT.lon}&current=wind_speed_10m,precipitation&timezone=${tz}`).then((r) => r.json()),
+        ])
+        if (stop) return
+        const h = m.hourly || { time: [], sea_level_height_msl: [] }
+        const sea = h.time
+          .map((t, i) => ({ label: `${t.slice(8, 10)}/${t.slice(5, 7)} ${t.slice(11, 13)}h`, v: h.sea_level_height_msl[i] }))
+          .filter((d) => d.v != null)
+        setLive({ marine: m.current || null, wx: w.current || null, sea, err: !m.current })
+      } catch (e) { if (!stop) setLive((s) => ({ ...s, err: true })) }
+    }
+    load()
+    const id = setInterval(load, 10 * 60 * 1000)
+    return () => { stop = true; clearInterval(id) }
+  }, [])
 
-useEffect(() => {
-  let stop = false
-  const since = new Date(Date.now() - 60 * 864e5).toISOString().slice(0, 19) + 'Z'
-  const url = `https://api.daac.asf.alaska.edu/services/search/param?dataset=NISAR&processingLevel=GCOV&intersectsWith=${encodeURIComponent(AOI_WKT)}&start=${since}&maxResults=100&output=geojson`
-  const get = (u) => fetch(u)
-    .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
-    .then((g) => (g && g.features ? g : Promise.reject('no features')))
-  get(url).catch(() => get('/data/live/nisar.geojson'))
-    .then((g) => { if (!stop) setNisar({ status: 'ok', geo: g }) })
-    .catch(() => { if (!stop) setNisar({ status: 'offline', geo: null }) })
-  return () => { stop = true }
-}, [])
+  useEffect(() => {
+    let stop = false
+    const since = new Date(Date.now() - 60 * 864e5).toISOString().slice(0, 19) + 'Z'
+    const url = `https://api.daac.asf.alaska.edu/services/search/param?dataset=NISAR&processingLevel=GCOV&intersectsWith=${encodeURIComponent(AOI_WKT)}&start=${since}&maxResults=100&output=geojson`
+    const get = (u) => fetch(u)
+      .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
+      .then((g) => (g && g.features ? g : Promise.reject('no features')))
+    get(url).catch(() => get('/data/live/nisar.geojson'))
+      .then((g) => { if (!stop) setNisar({ status: 'ok', geo: g }) })
+      .catch(() => { if (!stop) setNisar({ status: 'offline', geo: null }) })
+    return () => { stop = true }
+  }, [])
 
-const nisarItems = useMemo(() => (nisar.geo ? nisar.geo.features : [])
-  .map((f) => ({ f, t: f.properties && (f.properties.startTime || f.properties.start_time) }))
-  .filter((x) => x.t)
-  .sort((a, b) => new Date(b.t) - new Date(a.t)), [nisar])
-const lastPassDays = nisarItems.length ? Math.max(0, Math.floor((Date.now() - new Date(nisarItems[0].t)) / 864e5)) : null
+  const nisarItems = useMemo(() => (nisar.geo ? nisar.geo.features : [])
+    .map((f) => ({ f, t: f.properties && (f.properties.startTime || f.properties.start_time) }))
+    .filter((x) => x.t)
+    .sort((a, b) => new Date(b.t) - new Date(a.t)), [nisar])
+  const lastPassDays = nisarItems.length ? Math.max(0, Math.floor((Date.now() - new Date(nisarItems[0].t)) / 864e5)) : null
 
-useEffect(() => {
-  if (!ready) return
-  map.current.getSource('nisar').setData({ type: 'FeatureCollection', features: nisarItems.slice(0, 12).map((x) => x.f) })
-}, [nisarItems, ready])
-useEffect(() => {
-  if (!ready) return
-  const m = map.current
-  if (m.getLayer('liveimg')) m.removeLayer('liveimg')
-  if (m.getSource('liveimg')) m.removeSource('liveimg')
-  const firstSym = m.getStyle().layers.find((l) => l.type === 'symbol')
-  m.addSource('liveimg', { type: 'raster', tiles: [gibsUrl(imgDate)], tileSize: 256, maxzoom: 9, attribution: 'Imagery: NASA GIBS' })
-  m.addLayer({ id: 'liveimg', type: 'raster', source: 'liveimg',
-    layout: { visibility: liveImg && tab === 'live' && !intro ? 'visible' : 'none' } }, firstSym && firstSym.id)
-}, [ready, imgDate])
-useEffect(() => { vis('liveimg', liveImg && tab === 'live' && !intro) }, [liveImg, tab, intro, ready])
-useEffect(() => { vis('nisar-line', showNisar && tab === 'live' && !intro) }, [showNisar, tab, intro, ready])
+  useEffect(() => {
+    if (!ready) return
+    map.current.getSource('nisar').setData({ type: 'FeatureCollection', features: nisarItems.slice(0, 12).map((x) => x.f) })
+  }, [nisarItems, ready])
+  useEffect(() => {
+    if (!ready) return
+    const m = map.current
+    if (m.getLayer('liveimg')) m.removeLayer('liveimg')
+    if (m.getSource('liveimg')) m.removeSource('liveimg')
+    const firstSym = m.getStyle().layers.find((l) => l.type === 'symbol')
+    m.addSource('liveimg', { type: 'raster', tiles: [gibsUrl(imgDate)], tileSize: 256, maxzoom: 9, attribution: 'Imagery: NASA GIBS' })
+    m.addLayer({ id: 'liveimg', type: 'raster', source: 'liveimg',
+      layout: { visibility: liveImg && tab === 'live' && !intro ? 'visible' : 'none' } }, firstSym && firstSym.id)
+  }, [ready, imgDate])
+  useEffect(() => { vis('liveimg', liveImg && tab === 'live' && !intro) }, [liveImg, tab, intro, ready])
+  useEffect(() => { vis('nisar-line', showNisar && tab === 'live' && !intro) }, [showNisar, tab, intro, ready])
+
   const axis = { fill: '#8e9a93', fontSize: 10 }
   const ti = TABS.findIndex((t) => t[0] === tab)
 
@@ -517,15 +541,17 @@ useEffect(() => { vis('nisar-line', showNisar && tab === 'live' && !intro) }, [s
                     <div className="field">
                       <div className="f-head"><span>Shoreline year</span><em className="val">{year}</em>
                         <button className="play" onClick={() => setPlaying(!playing)}>{playing ? 'Pause' : 'Play'}</button></div>
-                      <Slider min={2015} max={2025} value={year} ticks={11} onChange={(v) => { setPlaying(false); setYear(v) }} />
+                      <Slider min={0} max={years.length - 1} value={Math.max(0, years.indexOf(year))} ticks={years.length} fmt={(i) => years[i]} onChange={(i) => { setPlaying(false); setYear(years[i]) }} />
                     </div>
-                    <div className="field">
-                      <div className="f-head"><span>Minimum coherence</span><em className="val">{minCoh.toFixed(2)}</em></div>
-                      <Slider min={0} max={0.9} step={0.05} value={minCoh} ticks={10} fmt={(v) => v.toFixed(2)} onChange={setMinCoh} />
-                    </div>
+                    {HAS_COHERENCE && (
+                      <div className="field">
+                        <div className="f-head"><span>Minimum coherence</span><em className="val">{minCoh.toFixed(2)}</em></div>
+                        <Slider min={0} max={0.9} step={0.05} value={minCoh} ticks={10} fmt={(v) => v.toFixed(2)} onChange={setMinCoh} />
+                      </div>
+                    )}
                     <div className="switches">
                       <Switch label="Subsidence" on={showSubs} onChange={() => setShowSubs(!showSubs)} />
-                      <Switch label="2015 baseline" on={showBase} onChange={() => setShowBase(!showBase)} />
+                      <Switch label={`${years[0]} baseline`} on={showBase} onChange={() => setShowBase(!showBase)} />
                       <Switch label="Satellite imagery" on={sat} onChange={() => setSat(!sat)} />
                     </div>
                     <div className="jump">
@@ -536,7 +562,7 @@ useEffect(() => { vis('nisar-line', showNisar && tab === 'live' && !intro) }, [s
                       <div className="legend" />
                       <div className="legend-l"><span>Sinking fast</span><span>Stable</span></div>
                     </div>
-                    <p className="fine">Dashed parchment line: 2015 shoreline. Teal line: selected year. Tap a dot to inspect it.</p>
+                    <p className="fine">Dashed parchment line: {years[0]} shoreline. Teal line: selected year. Tap a dot to inspect it.</p>
                   </>
                 )}
 
@@ -545,10 +571,10 @@ useEffect(() => { vis('nisar-line', showNisar && tab === 'live' && !intro) }, [s
                     <div className="metrics">
                       <Metric big label="Average sinking" value={avg.toFixed(1)} unit="mm/yr" />
                       <Metric label="Maximum" value={mx.toFixed(1)} unit="mm/yr" />
-                      <Metric label="Reliable pixels" value={reliable.toFixed(0)} unit="%" />
+                      {HAS_COHERENCE && <Metric label="Reliable pixels" value={reliable.toFixed(0)} unit="%" />}
                     </div>
                     <div>
-                      <span className="mini">Measurement points by sinking rate (mm/yr)</span>
+                      <span className="mini">Measurement points by sinking rate (mm/yr, negative = land rising)</span>
                       <ResponsiveContainer width="100%" height={160}>
                         <BarChart data={hist}>
                           <CartesianGrid stroke="rgba(255,255,255,.06)" vertical={false} />
@@ -559,81 +585,83 @@ useEffect(() => { vis('nisar-line', showNisar && tab === 'live' && !intro) }, [s
                         </BarChart>
                       </ResponsiveContainer>
                     </div>
-                    <p className="fine">Only points at or above the coherence setting ({minCoh.toFixed(2)}) are counted. Change it in the Map section.</p>
+                    <p className="fine">{HAS_COHERENCE ? `Only points at or above the coherence setting (${minCoh.toFixed(2)}) are counted. Change it in the Map section.` : 'Each point is one cell of the subsidence dataset.'}</p>
                   </>
                 )}
 
                 {tab === 'coast' && (
                   <>
                     <div className="metrics">
-                      <Metric big label="Shift since 2015" value={lastShift.toFixed(1)} unit="km" />
-                      <Metric label="Average pace" value={(lastShift / 10).toFixed(2)} unit="km/yr" />
+                      <Metric big label={shift.unit === 'km²' ? `Land area change since ${years[0]}` : `Shift since ${years[0]}`} value={sgn(lastShift)} unit={shift.unit} />
+                      <Metric label="Average pace" value={sgn(lastShift / spanYears, 2)} unit={`${shift.unit}/yr`} />
                     </div>
                     <div>
-                      <span className="mini">Average shoreline position change since 2015 (km)</span>
+                      <span className="mini">{shift.unit === 'km²' ? `Land area in the study box, change since ${years[0]} (km²)` : `Average shoreline position change since ${years[0]} (km)`}</span>
                       <ResponsiveContainer width="100%" height={160}>
-                        <LineChart data={shift}>
+                        <LineChart data={shift.rows}>
                           <CartesianGrid stroke="rgba(255,255,255,.06)" vertical={false} />
                           <XAxis dataKey="year" tick={axis} axisLine={false} tickLine={false} />
                           <YAxis tick={axis} width={34} axisLine={false} tickLine={false} />
                           <Tooltip contentStyle={tip} />
-                          <Line type="monotone" dataKey="km" stroke={C.blue} strokeWidth={1.5} dot={false} />
+                          <Line type="monotone" dataKey="v" stroke={C.blue} strokeWidth={1.5} dot={false} />
                         </LineChart>
                       </ResponsiveContainer>
                     </div>
-                    <p className="fine">Use the year slider and Play in the Map section to watch the shoreline move.</p>
+                    <p className="fine">{src.shore ? 'Waterlines are averaged from Sentinel-2 scenes taken January to March each year. Tides and mud move them by tens of metres, so treat small changes as noise.' : 'Preview shorelines.'} Use the year slider and Play in the Map section to watch the shoreline move.</p>
                   </>
                 )}
-{tab === 'live' && (
-  <>
-    <div className="livebar">
-      <i className={live.err ? 'dot off' : 'dot'} />
-      <span>{live.err ? 'Sea & weather feed unavailable' : live.marine ? `Live · model time ${live.marine.time.slice(11, 16)} IST` : 'Connecting…'}</span>
-    </div>
-    <div className="metrics">
-      <Metric big label="Sea level now (model)" value={signed(live.marine && live.marine.sea_level_height_msl)} unit="m vs mean" />
-      <Metric label="Waves" value={fmt1(live.marine && live.marine.wave_height)} unit="m" />
-      <Metric label="Sea temperature" value={fmt1(live.marine && live.marine.sea_surface_temperature)} unit="°C" />
-      <Metric label="Wind" value={fmt1(live.wx && live.wx.wind_speed_10m, 0)} unit="km/h" />
-      <Metric label="Rain now" value={fmt1(live.wx && live.wx.precipitation)} unit="mm" />
-    </div>
-    <div>
-      <span className="mini">Sea level, next 48 h · model, off Sagar Island</span>
-      <ResponsiveContainer width="100%" height={130}>
-        <LineChart data={live.sea}>
-          <CartesianGrid stroke="rgba(255,255,255,.06)" vertical={false} />
-          <XAxis dataKey="label" tick={axis} interval={11} axisLine={false} tickLine={false} />
-          <YAxis tick={axis} width={34} axisLine={false} tickLine={false} />
-          <Tooltip contentStyle={tip} />
-          <Line type="monotone" dataKey="v" stroke={C.blue} strokeWidth={1.5} dot={false} />
-        </LineChart>
-      </ResponsiveContainer>
-    </div>
-    <div className="switches">
-      <Switch label="Daily satellite image" on={liveImg} onChange={() => setLiveImg(!liveImg)} />
-      {liveImg && (
-        <div className="stepper">
-          <button disabled={imgDaysAgo >= 7} onClick={() => setImgDaysAgo((d) => Math.min(7, d + 1))}>‹ Earlier</button>
-          <span>{imgDate}</span>
-          <button disabled={imgDaysAgo <= 1} onClick={() => setImgDaysAgo((d) => Math.max(1, d - 1))}>Later ›</button>
-        </div>
-      )}
-      <Switch label="NISAR coverage outlines" on={showNisar} onChange={() => setShowNisar(!showNisar)} />
-      <Switch label="Subsidence points" on={showSubs} onChange={() => setShowSubs(!showSubs)} />
-      <Switch label="2015 baseline shoreline" on={showBase} onChange={() => setShowBase(!showBase)} />
-    </div>
-    <div className="metrics">
-      <Metric label="Latest NISAR pass" value={lastPassDays == null ? '–' : lastPassDays} unit="days ago" />
-      <Metric label="Products, 60 days" value={nisarItems.length} unit="GCOV" />
-    </div>
-    <p className="fine">
-      {nisar.status === 'loading' ? 'Checking the ASF archive…'
-        : nisar.status === 'offline' ? 'NISAR feed not connected. Run scripts/nisar_live.py to feed it.'
-        : 'NISAR products over the Sundarbans from ASF DAAC. New passes appear as ASF finishes processing them.'}
-    </p>
-    <p className="fine">Daily image: NASA GIBS (NOAA-20 VIIRS, about 250 m; clouds block the view). Sea and weather: model estimates from Open-Meteo.com, not a tide gauge.</p>
-  </>
-)}
+
+                {tab === 'live' && (
+                  <>
+                    <div className="livebar">
+                      <i className={live.err ? 'dot off' : 'dot'} />
+                      <span>{live.err ? 'Sea & weather feed unavailable' : live.marine ? `Live · model time ${live.marine.time.slice(11, 16)} IST` : 'Connecting…'}</span>
+                    </div>
+                    <div className="metrics">
+                      <Metric big label="Sea level now (model)" value={signed(live.marine && live.marine.sea_level_height_msl)} unit="m vs mean" />
+                      <Metric label="Waves" value={fmt1(live.marine && live.marine.wave_height)} unit="m" />
+                      <Metric label="Sea temperature" value={fmt1(live.marine && live.marine.sea_surface_temperature)} unit="°C" />
+                      <Metric label="Wind" value={fmt1(live.wx && live.wx.wind_speed_10m, 0)} unit="km/h" />
+                      <Metric label="Rain now" value={fmt1(live.wx && live.wx.precipitation)} unit="mm" />
+                    </div>
+                    <div>
+                      <span className="mini">Sea level, next 48 h · model, off Sagar Island</span>
+                      <ResponsiveContainer width="100%" height={130}>
+                        <LineChart data={live.sea}>
+                          <CartesianGrid stroke="rgba(255,255,255,.06)" vertical={false} />
+                          <XAxis dataKey="label" tick={axis} interval={11} axisLine={false} tickLine={false} />
+                          <YAxis tick={axis} width={34} axisLine={false} tickLine={false} />
+                          <Tooltip contentStyle={tip} />
+                          <Line type="monotone" dataKey="v" stroke={C.blue} strokeWidth={1.5} dot={false} />
+                        </LineChart>
+                      </ResponsiveContainer>
+                    </div>
+                    <div className="switches">
+                      <Switch label="Daily satellite image" on={liveImg} onChange={() => setLiveImg(!liveImg)} />
+                      {liveImg && (
+                        <div className="stepper">
+                          <button disabled={imgDaysAgo >= 7} onClick={() => setImgDaysAgo((d) => Math.min(7, d + 1))}>‹ Earlier</button>
+                          <span>{imgDate}</span>
+                          <button disabled={imgDaysAgo <= 1} onClick={() => setImgDaysAgo((d) => Math.max(1, d - 1))}>Later ›</button>
+                        </div>
+                      )}
+                      <Switch label="NISAR coverage outlines" on={showNisar} onChange={() => setShowNisar(!showNisar)} />
+                      <Switch label="Subsidence points" on={showSubs} onChange={() => setShowSubs(!showSubs)} />
+                      <Switch label={`${years[0]} baseline shoreline`} on={showBase} onChange={() => setShowBase(!showBase)} />
+                    </div>
+                    <div className="metrics">
+                      <Metric label="Latest NISAR pass" value={lastPassDays == null ? '–' : lastPassDays} unit="days ago" />
+                      <Metric label="Products, 60 days" value={nisarItems.length} unit="GCOV" />
+                    </div>
+                    <p className="fine">
+                      {nisar.status === 'loading' ? 'Checking the ASF archive…'
+                        : nisar.status === 'offline' ? 'NISAR feed not connected. Run scripts/nisar_live.py to feed it.'
+                        : 'NISAR products over the Sundarbans from ASF DAAC. New passes appear as ASF finishes processing them.'}
+                    </p>
+                    <p className="fine">Daily image: NASA GIBS (NOAA-20 VIIRS, about 250 m; clouds block the view). Sea and weather: model estimates from Open-Meteo.com, not a tide gauge.</p>
+                  </>
+                )}
+
                 {tab === 'risk' && (
                   <>
                     <p className="note">Relative sea-level rise is land sinking plus sea-level rise. Change the assumptions to see what follows.</p>
@@ -667,10 +695,11 @@ useEffect(() => { vis('nisar-line', showNisar && tab === 'live' && !intro) }, [s
 
                 {tab === 'about' && (
                   <>
-                    <p className="note"><b>Data.</b> SAR imagery processed with InSAR for ground displacement, plus yearly shoreline positions. Processing details (sensor, dates, chain) to be added by the SAR team.</p>
-                    <p className="note"><b>Coherence</b> shows how reliable each radar pixel is. Mangroves and water lose coherence, so unreliable pixels can be hidden.</p>
+                    <p className="note"><b>Subsidence.</b> {src.subs ? src.subs : 'SAR imagery processed with InSAR for ground displacement (preview dataset, processing details to be added by the SAR team).'}</p>
+                    <p className="note"><b>Shorelines.</b> {src.shore ? 'Waterlines from Sentinel-2 imagery (' + src.shore + '). Indicative only: tides, mud and mangrove shadow move them by tens of metres.' : 'Yearly shoreline positions (preview dataset).'}</p>
+                    {HAS_COHERENCE && <p className="note"><b>Coherence</b> shows how reliable each radar pixel is. Mangroves and water lose coherence, so unreliable pixels can be hidden.</p>}
                     <p className="note"><b>Risk classes</b> use illustrative thresholds (6 and 9 mm/yr) pending review. Projections are not forecasts.</p>
-                    <p className="note"><b>Data status:</b> {DATA_IS_PLACEHOLDER ? 'preview dataset, final SAR results pending.' : 'final processed results.'}</p>
+                    <p className="note"><b>Data status:</b> {src.subs && src.shore ? 'real data, see the sources above.' : src.subs || src.shore ? 'partly real data; the rest is still a preview.' : 'preview dataset, final SAR results pending.'}</p>
                     <p className="fine">Basemap © OpenStreetMap contributors © CARTO · Imagery © Esri · Built for the NASA Space Apps Challenge.</p>
                     <button className="textlink" onClick={replay}>Replay the story →</button>
                   </>
@@ -689,19 +718,21 @@ useEffect(() => { vis('nisar-line', showNisar && tab === 'live' && !intro) }, [s
           <small className="coord">{sel.lat.toFixed(3)}°N · {sel.lon.toFixed(3)}°E</small>
           <div className="i-big"><b>{(-sel.rate).toFixed(1)}<i>mm/yr</i></b><span>land sinking</span></div>
           <div className="i-row">
-            <div><span>Coherence</span><b>{sel.coh.toFixed(2)}{sel.coh < 0.4 ? ' ⚠' : ''}</b></div>
+            {HAS_COHERENCE && <div><span>Coherence</span><b>{sel.coh.toFixed(2)}{sel.coh < 0.4 ? ' ⚠' : ''}</b></div>}
             <div><span>Relative rise</span><b>{rel.toFixed(1)}</b></div>
             <div><span>By {horizon}</span><b>≈ {((rel * (horizon - 2025)) / 10).toFixed(0)} cm</b></div>
           </div>
           <span className={`risk ${risk.cls}`}><i />Risk · {risk.label}</span>
-          <ResponsiveContainer width="100%" height={100}>
-            <LineChart data={getTimeSeries(sel)}>
-              <XAxis dataKey="t" type="number" domain={['dataMin', 'dataMax']} tick={axis} tickCount={5} axisLine={false} tickLine={false} />
-              <YAxis tick={axis} width={30} axisLine={false} tickLine={false} />
-              <Tooltip contentStyle={tip} />
-              <Line type="monotone" dataKey="d" stroke={C.teal} dot={false} strokeWidth={1.5} />
-            </LineChart>
-          </ResponsiveContainer>
+          {HAS_TIMESERIES && (
+            <ResponsiveContainer width="100%" height={100}>
+              <LineChart data={getTimeSeries(sel)}>
+                <XAxis dataKey="t" type="number" domain={['dataMin', 'dataMax']} tick={axis} tickCount={5} axisLine={false} tickLine={false} />
+                <YAxis tick={axis} width={30} axisLine={false} tickLine={false} />
+                <Tooltip contentStyle={tip} />
+                <Line type="monotone" dataKey="d" stroke={C.teal} dot={false} strokeWidth={1.5} />
+              </LineChart>
+            </ResponsiveContainer>
+          )}
         </section>
       )}
     </>
