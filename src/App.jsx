@@ -14,12 +14,19 @@ const HOTSPOTS = [ // approximate coordinates: verify with research teammate
   { name: 'Sagar', lon: 88.06, lat: 21.74 },
   { name: 'Mousuni', lon: 88.20, lat: 21.66 },
 ]
-const TABS = [['map', 'Map'], ['land', 'Subsidence'], ['coast', 'Shoreline'], ['risk', 'Risk'], ['team', 'Team'], ['about', 'About']]
+const TABS = [['map', 'Map'], ['land', 'Subsidence'], ['coast', 'Shoreline'], ['live', 'Live'], ['risk', 'Risk'], ['team', 'Team'], ['about', 'About']]
 const TITLES = {
   map: `Where the delta is moving`, land: `The ground is giving way`, coast: `A shoreline in retreat`,
-  risk: `When land sinks as seas rise`, team: `The people behind it`, about: `Method & limits`,
+  live: `The delta right now`, risk: `When land sinks as seas rise`, team: `The people behind it`, about: `Method & limits`,
 }
 
+// ---- live feeds ----
+const LIVE_PT = { lat: 21.3, lon: 88.5 } // open water off Sagar Island: marine models need a sea point
+const AOI_WKT = 'POLYGON((88.0 21.5, 90.0 21.5, 90.0 22.8, 88.0 22.8, 88.0 21.5))'
+const GIBS_LAYER = 'VIIRS_NOAA20_CorrectedReflectance_TrueColor'
+const gibsUrl = (d) => `https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/${GIBS_LAYER}/default/${d}/GoogleMapsCompatible_Level9/{z}/{y}/{x}.jpg`
+const fmt1 = (v, d = 1) => (v == null || Number.isNaN(+v) ? '–' : (+v).toFixed(d))
+const signed = (v) => (v == null ? '–' : `${v >= 0 ? '+' : ''}${(+v).toFixed(2)}`)
 // FILL IN the real names. Add one entry per person (a role can appear more than once)
 const TEAM = [
   { name: `Name here`, role: `Satellite data acquisition & research` },
@@ -188,6 +195,12 @@ export default function App() {
   const [shift, setShift] = useState([])
   const [slr, setSlr] = useState(4) // mm/yr ASSUMPTION: confirm with research teammate
   const [horizon, setHorizon] = useState(2050)
+  const [live, setLive] = useState({ marine: null, wx: null, sea: [], err: false })
+  const [nisar, setNisar] = useState({ status: 'loading', geo: null })
+  const [liveImg, setLiveImg] = useState(true)
+  const [imgDaysAgo, setImgDaysAgo] = useState(1)
+  const [showNisar, setShowNisar] = useState(true)
+  const imgDate = new Date(Date.now() - imgDaysAgo * 864e5).toISOString().slice(0, 10)
 
   useEffect(() => {
     const r = () => setVp({ w: window.innerWidth, h: window.innerHeight })
@@ -223,6 +236,9 @@ export default function App() {
       m.addSource('sel', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
       m.addLayer({ id: 'sel', type: 'circle', source: 'sel', paint: {
         'circle-radius': 14, 'circle-color': 'rgba(0,0,0,0)', 'circle-stroke-color': C.parch, 'circle-stroke-width': 2 } })
+      m.addSource('nisar', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
+      m.addLayer({ id: 'nisar-line', type: 'line', source: 'nisar', layout: { visibility: 'none' },
+  paint: { 'line-color': C.blue, 'line-width': 1.5, 'line-dasharray': [3, 2], 'line-opacity': 0.8 } })
       m.on('click', 'subs', (e) => {
         const f = e.features[0]
         const [lon, lat] = f.geometry.coordinates
@@ -317,6 +333,64 @@ const beginStory = () => {
   const lastShift = shift.length ? shift[shift.length - 1].km : 0
   const rel = sel ? -sel.rate + slr : 0
   const risk = riskOf(rel)
+/* ---------- live feeds ---------- */
+useEffect(() => {
+  let stop = false
+  const load = async () => {
+    try {
+      const tz = 'Asia%2FKolkata'
+      const [m, w] = await Promise.all([
+        fetch(`https://marine-api.open-meteo.com/v1/marine?latitude=${LIVE_PT.lat}&longitude=${LIVE_PT.lon}&current=wave_height,sea_surface_temperature,sea_level_height_msl&hourly=sea_level_height_msl&forecast_days=2&timezone=${tz}`).then((r) => r.json()),
+        fetch(`https://api.open-meteo.com/v1/forecast?latitude=${LIVE_PT.lat}&longitude=${LIVE_PT.lon}&current=wind_speed_10m,precipitation&timezone=${tz}`).then((r) => r.json()),
+      ])
+      if (stop) return
+      const h = m.hourly || { time: [], sea_level_height_msl: [] }
+      const sea = h.time
+        .map((t, i) => ({ label: `${t.slice(8, 10)}/${t.slice(5, 7)} ${t.slice(11, 13)}h`, v: h.sea_level_height_msl[i] }))
+        .filter((d) => d.v != null)
+      setLive({ marine: m.current || null, wx: w.current || null, sea, err: !m.current })
+    } catch (e) { if (!stop) setLive((s) => ({ ...s, err: true })) }
+  }
+  load()
+  const id = setInterval(load, 10 * 60 * 1000)
+  return () => { stop = true; clearInterval(id) }
+}, [])
+
+useEffect(() => {
+  let stop = false
+  const since = new Date(Date.now() - 60 * 864e5).toISOString().slice(0, 19) + 'Z'
+  const url = `https://api.daac.asf.alaska.edu/services/search/param?dataset=NISAR&processingLevel=GCOV&intersectsWith=${encodeURIComponent(AOI_WKT)}&start=${since}&maxResults=100&output=geojson`
+  const get = (u) => fetch(u)
+    .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
+    .then((g) => (g && g.features ? g : Promise.reject('no features')))
+  get(url).catch(() => get('/data/live/nisar.geojson'))
+    .then((g) => { if (!stop) setNisar({ status: 'ok', geo: g }) })
+    .catch(() => { if (!stop) setNisar({ status: 'offline', geo: null }) })
+  return () => { stop = true }
+}, [])
+
+const nisarItems = useMemo(() => (nisar.geo ? nisar.geo.features : [])
+  .map((f) => ({ f, t: f.properties && (f.properties.startTime || f.properties.start_time) }))
+  .filter((x) => x.t)
+  .sort((a, b) => new Date(b.t) - new Date(a.t)), [nisar])
+const lastPassDays = nisarItems.length ? Math.max(0, Math.floor((Date.now() - new Date(nisarItems[0].t)) / 864e5)) : null
+
+useEffect(() => {
+  if (!ready) return
+  map.current.getSource('nisar').setData({ type: 'FeatureCollection', features: nisarItems.slice(0, 12).map((x) => x.f) })
+}, [nisarItems, ready])
+useEffect(() => {
+  if (!ready) return
+  const m = map.current
+  if (m.getLayer('liveimg')) m.removeLayer('liveimg')
+  if (m.getSource('liveimg')) m.removeSource('liveimg')
+  const firstSym = m.getStyle().layers.find((l) => l.type === 'symbol')
+  m.addSource('liveimg', { type: 'raster', tiles: [gibsUrl(imgDate)], tileSize: 256, maxzoom: 9, attribution: 'Imagery: NASA GIBS' })
+  m.addLayer({ id: 'liveimg', type: 'raster', source: 'liveimg',
+    layout: { visibility: liveImg && tab === 'live' && !intro ? 'visible' : 'none' } }, firstSym && firstSym.id)
+}, [ready, imgDate])
+useEffect(() => { vis('liveimg', liveImg && tab === 'live' && !intro) }, [liveImg, tab, intro, ready])
+useEffect(() => { vis('nisar-line', showNisar && tab === 'live' && !intro) }, [showNisar, tab, intro, ready])
   const axis = { fill: '#8e9a93', fontSize: 10 }
   const ti = TABS.findIndex((t) => t[0] === tab)
 
@@ -511,7 +585,56 @@ const beginStory = () => {
                     <p className="fine">Use the year slider and Play in the Map section to watch the shoreline move.</p>
                   </>
                 )}
-
+{tab === 'live' && (
+  <>
+    <div className="livebar">
+      <i className={live.err ? 'dot off' : 'dot'} />
+      <span>{live.err ? 'Sea & weather feed unavailable' : live.marine ? `Live · model time ${live.marine.time.slice(11, 16)} IST` : 'Connecting…'}</span>
+    </div>
+    <div className="metrics">
+      <Metric big label="Sea level now (model)" value={signed(live.marine && live.marine.sea_level_height_msl)} unit="m vs mean" />
+      <Metric label="Waves" value={fmt1(live.marine && live.marine.wave_height)} unit="m" />
+      <Metric label="Sea temperature" value={fmt1(live.marine && live.marine.sea_surface_temperature)} unit="°C" />
+      <Metric label="Wind" value={fmt1(live.wx && live.wx.wind_speed_10m, 0)} unit="km/h" />
+      <Metric label="Rain now" value={fmt1(live.wx && live.wx.precipitation)} unit="mm" />
+    </div>
+    <div>
+      <span className="mini">Sea level, next 48 h · model, off Sagar Island</span>
+      <ResponsiveContainer width="100%" height={130}>
+        <LineChart data={live.sea}>
+          <CartesianGrid stroke="rgba(255,255,255,.06)" vertical={false} />
+          <XAxis dataKey="label" tick={axis} interval={11} axisLine={false} tickLine={false} />
+          <YAxis tick={axis} width={34} axisLine={false} tickLine={false} />
+          <Tooltip contentStyle={tip} />
+          <Line type="monotone" dataKey="v" stroke={C.blue} strokeWidth={1.5} dot={false} />
+        </LineChart>
+      </ResponsiveContainer>
+    </div>
+    <div className="switches">
+      <Switch label="Daily satellite image" on={liveImg} onChange={() => setLiveImg(!liveImg)} />
+      {liveImg && (
+        <div className="stepper">
+          <button disabled={imgDaysAgo >= 7} onClick={() => setImgDaysAgo((d) => Math.min(7, d + 1))}>‹ Earlier</button>
+          <span>{imgDate}</span>
+          <button disabled={imgDaysAgo <= 1} onClick={() => setImgDaysAgo((d) => Math.max(1, d - 1))}>Later ›</button>
+        </div>
+      )}
+      <Switch label="NISAR coverage outlines" on={showNisar} onChange={() => setShowNisar(!showNisar)} />
+      <Switch label="Subsidence points" on={showSubs} onChange={() => setShowSubs(!showSubs)} />
+      <Switch label="2015 baseline shoreline" on={showBase} onChange={() => setShowBase(!showBase)} />
+    </div>
+    <div className="metrics">
+      <Metric label="Latest NISAR pass" value={lastPassDays == null ? '–' : lastPassDays} unit="days ago" />
+      <Metric label="Products, 60 days" value={nisarItems.length} unit="GCOV" />
+    </div>
+    <p className="fine">
+      {nisar.status === 'loading' ? 'Checking the ASF archive…'
+        : nisar.status === 'offline' ? 'NISAR feed not connected. Run scripts/nisar_live.py to feed it.'
+        : 'NISAR products over the Sundarbans from ASF DAAC. New passes appear as ASF finishes processing them.'}
+    </p>
+    <p className="fine">Daily image: NASA GIBS (NOAA-20 VIIRS, about 250 m; clouds block the view). Sea and weather: model estimates from Open-Meteo.com, not a tide gauge.</p>
+  </>
+)}
                 {tab === 'risk' && (
                   <>
                     <p className="note">Relative sea-level rise is land sinking plus sea-level rise. Change the assumptions to see what follows.</p>
