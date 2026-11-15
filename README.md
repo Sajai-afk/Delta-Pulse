@@ -30,8 +30,14 @@ Run the following command:
 ```bash
 npm install
 ```
+### Step 3:NISAR live  data
 
-This installs all the packages and dependencies required by the project.
+To generate the dependencies for the live data
+
+```bash
+pip install asf_search
+```
+
 
 **Note:** This step is required during the initial setup and whenever project dependencies change.
 
