@@ -14,10 +14,14 @@ const HOTSPOTS = [ // approximate coordinates: verify with research teammate
   { name: 'Sagar', lon: 88.06, lat: 21.74 },
   { name: 'Mousuni', lon: 88.20, lat: 21.66 },
 ]
-const TABS = [['map', 'Map'], ['land', 'Subsidence'], ['coast', 'Shoreline'], ['live', 'Live'], ['risk', 'Risk'], ['team', 'Team'], ['about', 'About']]
+
+const TABS = [['map', 'Map'], ['land', 'Subsidence'], ['coast', 'Shoreline'], ['live', 'Live'], ['risk', 'Risk'], ['about', 'About']]
+
+
+
 const TITLES = {
   map: `Where the delta is moving`, land: `The ground is giving way`, coast: `A shoreline in retreat`,
-  live: `The delta right now`, risk: `When land sinks as seas rise`, team: `The people behind it`, about: `Method & limits`,
+  live: `The delta right now`, risk: `When land sinks as seas rise`, about: `Method & limits`,
 }
 
 // ---- live feeds ----
@@ -27,16 +31,6 @@ const GIBS_LAYER = 'VIIRS_NOAA20_CorrectedReflectance_TrueColor'
 const gibsUrl = (d) => `https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/${GIBS_LAYER}/default/${d}/GoogleMapsCompatible_Level9/{z}/{y}/{x}.jpg`
 const fmt1 = (v, d = 1) => (v == null || Number.isNaN(+v) ? '–' : (+v).toFixed(d))
 const signed = (v) => (v == null ? '–' : `${v >= 0 ? '+' : ''}${(+v).toFixed(2)}`)
-// FILL IN the real names. Add one entry per person (a role can appear more than once)
-const TEAM = [
-  { name: `Name here`, role: `Satellite data acquisition & research` },
-  { name: `Name here`, role: `SAR image processing & preprocessing` },
-  { name: `Name here`, role: `Coastal change detection & subsidence analysis` },
-  { name: `Name here`, role: `Backend & Python integration` },
-  { name: `Name here`, role: `UI/UX design` },
-  { name: `Name here`, role: `App development` },
-  { name: `Name here`, role: `Research, validation & documentation` },
-]
 
 const pad = () => (window.innerWidth >= 900 ? { left: 440, right: 0, top: 0, bottom: 0 } : { left: 0, right: 0, top: 70, bottom: 300 })
 const riskOf = (r) => (r >= 9 ? { label: 'Severe', cls: 'sev' } : r >= 6 ? { label: 'High', cls: 'high' } : { label: 'Moderate', cls: 'mod' })
@@ -655,17 +649,7 @@ useEffect(() => { vis('nisar-line', showNisar && tab === 'live' && !intro) }, [s
                   </>
                 )}
 
-                {tab === 'team' && (
-                  <>
-                    <p className="note">Every workstream, one goal: turning radar data into a clear picture of the sinking delta.</p>
-                    <ol className="team">
-                      {TEAM.map((t, i) => (
-                        <li key={i}><sup>{String(i + 1).padStart(2, '0')}</sup><div><b>{t.name}</b><span>{t.role}</span></div></li>
-                      ))}
-                    </ol>
-                  </>
-                )}
-
+               
                 {tab === 'about' && (
                   <>
                     <p className="note"><b>Data.</b> SAR imagery processed with InSAR for ground displacement, plus yearly shoreline positions. Processing details (sensor, dates, chain) to be added by the SAR team.</p>
