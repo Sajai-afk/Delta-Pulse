@@ -15,9 +15,7 @@ const HOTSPOTS = [ // approximate coordinates: verify with research teammate
   { name: 'Mousuni', lon: 88.20, lat: 21.66 },
 ]
 
-const TABS = [['map', 'Map'], ['land', 'Subsidence'], ['coast', 'Shoreline'], ['live', 'Live'], ['risk', 'Risk'], ['about', 'About']]
-
-
+const TABS = [['map', 'Map'], ['live', 'Live'], ['land', 'Subsidence'], ['coast', 'Shoreline'], ['risk', 'Risk'], ['about', 'About']]
 
 const TITLES = {
   map: `Where the delta is moving`, land: `The ground is giving way`, coast: `A shoreline in retreat`,

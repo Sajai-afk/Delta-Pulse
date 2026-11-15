@@ -15,7 +15,7 @@ const HOTSPOTS = [ // approximate coordinates: verify with research teammate
   { name: 'Sagar', lon: 88.06, lat: 21.74 },
   { name: 'Mousuni', lon: 88.20, lat: 21.66 },
 ]
-const TABS = [['map', 'Map'], ['land', 'Subsidence'], ['coast', 'Shoreline'], ['live', 'Live'], ['risk', 'Risk'],  ['about', 'About']]
+const TABS = [['map', 'Map'], ['live', 'Live'], ['land', 'Subsidence'], ['coast', 'Shoreline'], ['risk', 'Risk'], ['about', 'About']]
 const TITLES = {
   map: `Where the delta is moving`, land: `The ground is giving way`, coast: `A shoreline in retreat`,
   live: `The delta right now`, risk: `When land sinks as seas rise`, team: `The people behind it`, about: `Method & limits`,
@@ -487,7 +487,10 @@ const beginStory = () => {
               {S.detail && <p className="story-detail">{S.detail}</p>}
               <div className="story-nav">
                 <button disabled={storyStep === 0} onClick={() => setStoryStep((v) => Math.max(0, v - 1))}>← Back</button>
-                <button className="next" onClick={() => (storyStep === STORY.length - 1 ? enter() : setStoryStep((v) => v + 1))}>
+                <button
+                  className={`next ${storyStep === STORY.length - 1 ? 'explore' : ''}`}
+                  onClick={() => (storyStep === STORY.length - 1 ? enter() : setStoryStep((v) => v + 1))}
+                >
                   {storyStep === STORY.length - 1 ? 'Explore the map →' : 'Next stop →'}
                 </button>
               </div>
